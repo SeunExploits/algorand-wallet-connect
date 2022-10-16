@@ -1,6 +1,28 @@
 import algosdk from "algosdk";
 import { apiGetTxnParams, ChainType } from "./helpers/api";
 
+// Specified address is considered the asset reserve
+// (it has no special privileges, this is only informational)
+const reserveAddr = undefined;
+// Specified address can freeze or unfreeze user asset holdings   
+const freezeAddr = undefined;
+// Specified address can revoke user asset holdings and send 
+// them to other addresses    
+const clawbackAddr = undefined;
+// Whether user accounts will need to be unfrozen before transacting    
+const defaultFrozen = false;
+ // Use actual total  > 1 to create a Fungible Token
+// example 1:(fungible Tokens)
+// totalIssuance = 10, decimals = 0, result is 10 total actual 
+// example 2: (fractional NFT, each is 0.1)
+// totalIssuance = 10, decimals = 1, result is 1.0 total actual
+// example 3: (NFT)
+// totalIssuance = 1, decimals = 0, result is 1 total actual 
+// integer number of decimals for asset unit calculation
+const decimals = 0;
+const total = 1; // how many of this asset there will be
+const NFT_ASSETS_MANAGER_ADDR = process.env.REACT_APP_NFT_ASSETS_MANAGER_ADDR;
+
 const testAccounts = [
   algosdk.mnemonicToSecretKey(
     "cannon scatter chest item way pulp seminar diesel width tooth enforce fire rug mushroom tube sustain glide apple radar chronic ask plastic brown ability badge",
@@ -25,6 +47,23 @@ export function signTxnWithTestAccount(txn: algosdk.Transaction): Uint8Array {
   throw new Error(`Cannot sign transaction from unknown test account: ${sender}`);
 }
 
+export interface INftTxn {
+  txn: algosdk.Transaction;
+  signers?: string[];
+  authAddr?: string;
+  message?: string;
+}
+
+export interface INftParams {
+  unitName: string;
+  assetName: string;
+  metadataUrl: string;
+  metadataHash: string;
+}
+
+export type NftTxnReturnType = INftTxn[][];
+
+export type NftTxn = (chain: ChainType, address: string, params: INftParams) => Promise<NftTxnReturnType>;
 export interface IScenarioTxn {
   txn: algosdk.Transaction;
   signers?: string[];
@@ -92,6 +131,61 @@ const singlePayTxn: Scenario = async (
     {
       txn,
       message: "This is a payment transaction that sends 0.1 Algos to yourself.",
+    },
+  ];
+  return [txnsToSign];
+};
+
+export const singleAssetCreationTxn: NftTxn = async (
+  chain: ChainType,
+  address: string,
+  params: INftParams,
+): Promise<NftTxnReturnType> => {
+  
+  // Used to display asset units to user    
+  const unitName = params.unitName;
+  // Friendly name of the asset    
+  const assetName = params.assetName;
+  // Optional string pointing to a URL relating to the asset
+  // const url = "https://s3.amazonaws.com/your-bucket/metadata.json";
+  // Optional hash commitment of some sort relating to the asset. 32 character length.
+  // metadata can define the unitName and assetName as well.
+  // see ASA metadata conventions here: https://github.com/algorandfoundation/ARCs/blob/main/ARCs/arc-0003.md
+
+
+  // The following parameters are the only ones
+  // that can be changed, and they have to be changed
+  // by the current manager
+  // Specified address can change reserve, freeze, clawback, and manager
+  // If they are set to undefined at creation time, you will not be able to modify these later
+  const managerAddr = NFT_ASSETS_MANAGER_ADDR; // OPTIONAL: FOR DEMO ONLY, USED TO DESTROY ASSET WITHIN
+  
+  const suggestedParams = await apiGetTxnParams(chain);
+
+  const txn = algosdk.makeAssetCreateTxnWithSuggestedParamsFromObject({
+    from: address,
+    total,
+    decimals, 
+    assetName,
+    unitName,
+    assetURL: params.metadataUrl,
+    assetMetadataHash: params.metadataHash,
+    defaultFrozen,
+    freeze: freezeAddr,
+    manager: managerAddr,
+    clawback: clawbackAddr,
+    reserve: reserveAddr,
+    note: new Uint8Array(Buffer.from("NFT asset creation")),
+    suggestedParams,
+  });
+
+
+  // assetID = confirmedTxn["asset-index"];
+
+  const txnsToSign = [
+    {
+      txn,
+      message: "This is an NFT asset creation transaction",
     },
   ];
   return [txnsToSign];
