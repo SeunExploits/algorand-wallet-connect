@@ -15,7 +15,7 @@ import { fonts } from "./styles";
 import { apiGetAccountAssets, apiSubmitTransactions, ChainType } from "./helpers/api";
 import { IAssetData, IWalletTransaction, SignTxnParams } from "./helpers/types";
 import AccountAssets from "./components/AccountAssets";
-import { Scenario, scenarios, signTxnWithTestAccount } from "./scenarios";
+import { INftParams, NftTxn, Scenario, /* scenarios ,*/ signTxnWithTestAccount, singleAssetCreationTxn } from "./scenarios";
 
 const SLayout = styled.div`
   position: relative;
@@ -435,6 +435,147 @@ class App extends React.Component<unknown, IAppState> {
     }
   };
 
+  public signNftAssetCreateTxn = async (txn: NftTxn) => {
+    const { connector, address, chain } = this.state;
+
+    if (!connector) {
+      return;
+    }
+
+    try {
+      const params: INftParams = {
+        unitName: "AGF",
+        assetName: "Agrify NFT tokenized produce",
+        // TODO: fetch metadata from backend
+        metadataUrl: "https://s3.amazonaws.com/bucket-name/metadata.json",
+        metadataHash: "16efaa3924a6fd9d3a4824799a4ac65d"
+      }
+      const txnsToSign = await txn(chain, address, params);
+
+      // open modal
+      this.toggleModal();
+
+      // toggle pending request indicator
+      this.setState({ pendingRequest: true });
+
+      const flatTxns = txnsToSign.reduce((acc, val) => acc.concat(val), []);
+
+      const walletTxns: IWalletTransaction[] = flatTxns.map(
+        ({ txn, signers, authAddr, message }) => ({
+          txn: Buffer.from(algosdk.encodeUnsignedTransaction(txn)).toString("base64"),
+          signers, // TODO: put auth addr in signers array
+          authAddr,
+          message,
+        }),
+      );
+
+      // sign transaction
+      const requestParams: SignTxnParams = [walletTxns];
+      const request = formatJsonRpcRequest("algo_signTxn", requestParams);
+      const result: Array<string | null> = await connector.sendCustomRequest(request);
+
+      console.log("Raw response:", result);
+
+      const indexToGroup = (index: number) => {
+        for (let group = 0; group < txnsToSign.length; group++) {
+          const groupLength = txnsToSign[group].length;
+          if (index < groupLength) {
+            return [group, index];
+          }
+
+          index -= groupLength;
+        }
+
+        throw new Error(`Index too large for groups: ${index}`);
+      };
+
+      const signedPartialTxns: Array<Array<Uint8Array | null>> = txnsToSign.map(() => []);
+      result.forEach((r, i) => {
+        const [group, groupIndex] = indexToGroup(i);
+        const toSign = txnsToSign[group][groupIndex];
+
+        if (r == null) {
+          if (toSign.signers !== undefined && toSign.signers?.length < 1) {
+            signedPartialTxns[group].push(null);
+            return;
+          }
+          throw new Error(`Transaction at index ${i}: was not signed when it should have been`);
+        }
+
+        if (toSign.signers !== undefined && toSign.signers?.length < 1) {
+          throw new Error(`Transaction at index ${i} was signed when it should not have been`);
+        }
+
+        const rawSignedTxn = Buffer.from(r, "base64");
+        signedPartialTxns[group].push(new Uint8Array(rawSignedTxn));
+      });
+
+      const signedTxns: Uint8Array[][] = signedPartialTxns.map(
+        (signedPartialTxnsInternal, group) => {
+          return signedPartialTxnsInternal.map((stxn, groupIndex) => {
+            if (stxn) {
+              return stxn;
+            }
+
+            return signTxnWithTestAccount(txnsToSign[group][groupIndex].txn);
+          });
+        },
+      );
+
+      const signedTxnInfo: Array<Array<{
+        txID: string;
+        signingAddress?: string;
+        signature: string;
+      } | null>> = signedPartialTxns.map((signedPartialTxnsInternal, group) => {
+        return signedPartialTxnsInternal.map((rawSignedTxn, i) => {
+          if (rawSignedTxn == null) {
+            return null;
+          }
+
+          const signedTxn = algosdk.decodeSignedTransaction(rawSignedTxn);
+          const txn = (signedTxn.txn as unknown) as algosdk.Transaction;
+          const txID = txn.txID();
+          const unsignedTxID = txnsToSign[group][i].txn.txID();
+
+          if (txID !== unsignedTxID) {
+            throw new Error(
+              `Signed transaction at index ${i} differs from unsigned transaction. Got ${txID}, expected ${unsignedTxID}`,
+            );
+          }
+
+          if (!signedTxn.sig) {
+            throw new Error(`Signature not present on transaction at index ${i}`);
+          }
+
+          return {
+            txID,
+            signingAddress: signedTxn.sgnr ? algosdk.encodeAddress(signedTxn.sgnr) : undefined,
+            signature: Buffer.from(signedTxn.sig).toString("base64"),
+          };
+        });
+      });
+
+      console.log("Signed txn info:", signedTxnInfo);
+
+      // format displayed result
+      const formattedResult: IResult = {
+        method: "algo_signTxn",
+        body: signedTxnInfo,
+      };
+
+      // display result
+      this.setState({
+        connector,
+        pendingRequest: false,
+        signedTxns,
+        result: formattedResult,
+      });
+    } catch (error) {
+      console.error(error);
+      this.setState({ connector, pendingRequest: false, result: null });
+    }
+  };
+
   public async submitSignedTransaction() {
     const { signedTxns, chain } = this.state;
     if (signedTxns == null) {
@@ -523,11 +664,14 @@ class App extends React.Component<unknown, IAppState> {
                 <h3>Actions</h3>
                 <Column center>
                   <STestButtonContainer>
-                    {scenarios.map(({ name, scenario }) => (
+                    {/* {scenarios.map(({ name, scenario }) => (
                       <STestButton left key={name} onClick={() => this.signTxnScenario(scenario)}>
                         {name}
                       </STestButton>
-                    ))}
+                    ))} */}
+                    <STestButton left onClick={() => this.signNftAssetCreateTxn(singleAssetCreationTxn)}>
+                      Sign NFT asset mint txn
+                    </STestButton>
                   </STestButtonContainer>
                 </Column>
               </SBalances>
